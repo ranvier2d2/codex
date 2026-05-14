@@ -82,6 +82,7 @@ pub mod sandboxing;
 mod session_prefix;
 mod session_startup_prewarm;
 mod shell_detect;
+mod skill_dynamic_context;
 pub mod skills;
 pub(crate) use skills::SkillInjections;
 pub(crate) use skills::SkillLoadOutcome;

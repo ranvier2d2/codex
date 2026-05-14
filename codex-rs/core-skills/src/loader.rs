@@ -1,4 +1,5 @@
 use crate::model::SkillDependencies;
+use crate::model::SkillDynamicContext;
 use crate::model::SkillError;
 use crate::model::SkillFileSystemsByPath;
 use crate::model::SkillInterface;
@@ -59,6 +60,8 @@ struct SkillMetadataFile {
     dependencies: Option<Dependencies>,
     #[serde(default)]
     policy: Option<Policy>,
+    #[serde(default)]
+    dynamic_context: Option<DynamicContext>,
 }
 
 #[derive(Default)]
@@ -66,6 +69,7 @@ struct LoadedSkillMetadata {
     interface: Option<SkillInterface>,
     dependencies: Option<SkillDependencies>,
     policy: Option<SkillPolicy>,
+    dynamic_context: Option<SkillDynamicContext>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -90,6 +94,22 @@ struct Policy {
     allow_implicit_invocation: Option<bool>,
     #[serde(default)]
     products: Vec<Product>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct DynamicContext {
+    #[serde(default)]
+    inline_command_placeholders: Option<bool>,
+    #[serde(default)]
+    allowed_commands: Vec<String>,
+    #[serde(default)]
+    timeout_seconds: Option<u64>,
+    #[serde(default)]
+    max_output_chars: Option<usize>,
+    #[serde(default, alias = "max_total_chars")]
+    max_total_output_chars: Option<usize>,
+    #[serde(default)]
+    max_placeholders: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -118,6 +138,11 @@ const MAX_DEPENDENCY_VALUE_LEN: usize = MAX_DESCRIPTION_LEN;
 const MAX_DEPENDENCY_DESCRIPTION_LEN: usize = MAX_DESCRIPTION_LEN;
 const MAX_DEPENDENCY_COMMAND_LEN: usize = MAX_DESCRIPTION_LEN;
 const MAX_DEPENDENCY_URL_LEN: usize = MAX_DESCRIPTION_LEN;
+const MAX_DYNAMIC_CONTEXT_COMMAND_LEN: usize = 4096;
+const MAX_DYNAMIC_CONTEXT_ALLOWED_COMMANDS: usize = 64;
+const MAX_DYNAMIC_CONTEXT_TIMEOUT_SECONDS: u64 = 30;
+const MAX_DYNAMIC_CONTEXT_OUTPUT_CHARS: usize = 200_000;
+const MAX_DYNAMIC_CONTEXT_PLACEHOLDERS: usize = 16;
 // Traversal depth from the skills root.
 const MAX_SCAN_DEPTH: usize = 6;
 const MAX_SKILLS_DIRS_PER_ROOT: usize = 2000;
@@ -200,6 +225,14 @@ where
         .map(|skill| skill.path_to_skills_md.clone())
         .collect();
     skill_root_by_path.retain(|path, _| retained_skill_paths.contains(path));
+    outcome.dynamic_contexts_by_skill_path = Arc::new(
+        outcome
+            .dynamic_contexts_by_skill_path
+            .iter()
+            .filter(|(path, _)| retained_skill_paths.contains(*path))
+            .map(|(path, dynamic_context)| (path.clone(), dynamic_context.clone()))
+            .collect(),
+    );
     let used_roots: HashSet<AbsolutePathBuf> = skill_root_by_path.values().cloned().collect();
     skill_roots.retain(|root| used_roots.contains(root));
     file_systems_by_skill_path.retain(|path, _| retained_skill_paths.contains(path));
@@ -571,7 +604,11 @@ async fn discover_skills_under_root(
 
             if metadata.is_file && file_name == SKILLS_FILENAME {
                 match parse_skill_file(fs, &path, scope, plugin_id).await {
-                    Ok(skill) => {
+                    Ok((skill, dynamic_context)) => {
+                        if let Some(dynamic_context) = dynamic_context {
+                            Arc::make_mut(&mut outcome.dynamic_contexts_by_skill_path)
+                                .insert(skill.path_to_skills_md.clone(), dynamic_context);
+                        }
                         outcome.skills.push(skill);
                     }
                     Err(err) => {
@@ -601,7 +638,7 @@ async fn parse_skill_file(
     path: &AbsolutePathBuf,
     scope: SkillScope,
     plugin_id: Option<&str>,
-) -> Result<SkillMetadata, SkillParseError> {
+) -> Result<(SkillMetadata, Option<SkillDynamicContext>), SkillParseError> {
     let contents = fs
         .read_file_text(path, /*sandbox*/ None)
         .await
@@ -634,6 +671,7 @@ async fn parse_skill_file(
         interface,
         dependencies,
         policy,
+        dynamic_context,
     } = load_skill_metadata(fs, path).await;
 
     validate_len(&name, MAX_NAME_LEN, "name")?;
@@ -648,17 +686,20 @@ async fn parse_skill_file(
 
     let resolved_path = canonicalize_for_skill_identity(path);
 
-    Ok(SkillMetadata {
-        name,
-        description,
-        short_description,
-        interface,
-        dependencies,
-        policy,
-        path_to_skills_md: resolved_path,
-        scope,
-        plugin_id: plugin_id.map(str::to_string),
-    })
+    Ok((
+        SkillMetadata {
+            name,
+            description,
+            short_description,
+            interface,
+            dependencies,
+            policy,
+            path_to_skills_md: resolved_path,
+            scope,
+            plugin_id: plugin_id.map(str::to_string),
+        },
+        dynamic_context,
+    ))
 }
 
 fn default_skill_name(path: &AbsolutePathBuf) -> String {
@@ -742,11 +783,13 @@ async fn load_skill_metadata(
         interface,
         dependencies,
         policy,
+        dynamic_context,
     } = parsed;
     LoadedSkillMetadata {
         interface: resolve_interface(interface, &skill_dir),
         dependencies: resolve_dependencies(dependencies),
         policy: resolve_policy(policy),
+        dynamic_context: resolve_dynamic_context(dynamic_context),
     }
 }
 
@@ -803,6 +846,94 @@ fn resolve_policy(policy: Option<Policy>) -> Option<SkillPolicy> {
         allow_implicit_invocation: policy.allow_implicit_invocation,
         products: policy.products,
     })
+}
+
+fn resolve_dynamic_context(dynamic_context: Option<DynamicContext>) -> Option<SkillDynamicContext> {
+    let dynamic_context = dynamic_context?;
+    let allowed_commands = dynamic_context
+        .allowed_commands
+        .into_iter()
+        .take(MAX_DYNAMIC_CONTEXT_ALLOWED_COMMANDS)
+        .filter_map(resolve_dynamic_context_command)
+        .collect();
+
+    Some(SkillDynamicContext {
+        inline_command_placeholders: dynamic_context.inline_command_placeholders.unwrap_or(false),
+        allowed_commands,
+        timeout_seconds: clamp_positive_u64(
+            dynamic_context.timeout_seconds,
+            MAX_DYNAMIC_CONTEXT_TIMEOUT_SECONDS,
+            "dynamic_context.timeout_seconds",
+        ),
+        max_output_chars: clamp_positive_usize(
+            dynamic_context.max_output_chars,
+            MAX_DYNAMIC_CONTEXT_OUTPUT_CHARS,
+            "dynamic_context.max_output_chars",
+        ),
+        max_total_output_chars: clamp_positive_usize(
+            dynamic_context.max_total_output_chars,
+            MAX_DYNAMIC_CONTEXT_OUTPUT_CHARS,
+            "dynamic_context.max_total_output_chars",
+        ),
+        max_placeholders: clamp_positive_usize(
+            dynamic_context.max_placeholders,
+            MAX_DYNAMIC_CONTEXT_PLACEHOLDERS,
+            "dynamic_context.max_placeholders",
+        ),
+    })
+}
+
+fn resolve_dynamic_context_command(command: String) -> Option<String> {
+    let command = command.trim().to_string();
+    if command.is_empty() {
+        tracing::warn!("ignoring dynamic_context.allowed_commands entry: command is empty");
+        return None;
+    }
+    if command.contains(['\n', '\r', '\0']) {
+        tracing::warn!(
+            "ignoring dynamic_context.allowed_commands entry: command must be a single line"
+        );
+        return None;
+    }
+    if command.chars().count() > MAX_DYNAMIC_CONTEXT_COMMAND_LEN {
+        tracing::warn!(
+            "ignoring dynamic_context.allowed_commands entry: exceeds maximum length of {MAX_DYNAMIC_CONTEXT_COMMAND_LEN} characters"
+        );
+        return None;
+    }
+    Some(command)
+}
+
+fn clamp_positive_u64(value: Option<u64>, max_value: u64, field: &'static str) -> Option<u64> {
+    match value {
+        Some(0) => {
+            tracing::warn!("ignoring {field}: value must be greater than zero");
+            None
+        }
+        Some(value) if value > max_value => {
+            tracing::warn!("clamping {field}: exceeds maximum value of {max_value}");
+            Some(max_value)
+        }
+        value => value,
+    }
+}
+
+fn clamp_positive_usize(
+    value: Option<usize>,
+    max_value: usize,
+    field: &'static str,
+) -> Option<usize> {
+    match value {
+        Some(0) => {
+            tracing::warn!("ignoring {field}: value must be greater than zero");
+            None
+        }
+        Some(value) if value > max_value => {
+            tracing::warn!("clamping {field}: exceeds maximum value of {max_value}");
+            Some(max_value)
+        }
+        value => value,
+    }
 }
 
 fn resolve_dependency_tool(tool: DependencyTool) -> Option<SkillToolDependency> {

@@ -70,6 +70,16 @@ pub struct SkillDependencies {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillDynamicContext {
+    pub inline_command_placeholders: bool,
+    pub allowed_commands: Vec<String>,
+    pub timeout_seconds: Option<u64>,
+    pub max_output_chars: Option<usize>,
+    pub max_total_output_chars: Option<usize>,
+    pub max_placeholders: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillToolDependency {
     pub r#type: String,
     pub value: String,
@@ -93,6 +103,7 @@ pub struct SkillLoadOutcome {
     pub(crate) skill_roots: Vec<AbsolutePathBuf>,
     pub(crate) skill_root_by_path: Arc<HashMap<AbsolutePathBuf, AbsolutePathBuf>>,
     pub(crate) file_systems_by_skill_path: SkillFileSystemsByPath,
+    pub(crate) dynamic_contexts_by_skill_path: Arc<HashMap<AbsolutePathBuf, SkillDynamicContext>>,
     pub(crate) implicit_skills_by_scripts_dir: Arc<HashMap<AbsolutePathBuf, SkillMetadata>>,
     pub(crate) implicit_skills_by_doc_path: Arc<HashMap<AbsolutePathBuf, SkillMetadata>>,
 }
@@ -125,6 +136,11 @@ impl SkillLoadOutcome {
         skill: &SkillMetadata,
     ) -> Option<Arc<dyn ExecutorFileSystem>> {
         self.file_systems_by_skill_path
+            .get(&skill.path_to_skills_md)
+    }
+
+    pub fn dynamic_context_for_skill(&self, skill: &SkillMetadata) -> Option<&SkillDynamicContext> {
+        self.dynamic_contexts_by_skill_path
             .get(&skill.path_to_skills_md)
     }
 }
@@ -179,6 +195,14 @@ pub fn filter_skill_load_outcome_for_product(
     outcome
         .file_systems_by_skill_path
         .retain_paths(&retained_paths);
+    outcome.dynamic_contexts_by_skill_path = Arc::new(
+        outcome
+            .dynamic_contexts_by_skill_path
+            .iter()
+            .filter(|(path, _)| retained_paths.contains(*path))
+            .map(|(path, dynamic_context)| (path.clone(), dynamic_context.clone()))
+            .collect(),
+    );
     outcome.skill_root_by_path = Arc::new(
         outcome
             .skill_root_by_path

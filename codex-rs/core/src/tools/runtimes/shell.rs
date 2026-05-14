@@ -77,6 +77,11 @@ pub(crate) enum ShellRuntimeBackend {
     /// adapter, with fallback to the standard shell runtime flow if
     /// prerequisites are not met.
     ShellCommandZshFork,
+    /// Internal shell execution used while preparing skill dynamic context.
+    ///
+    /// This follows the normal approval, hook, and sandbox path, but suppresses
+    /// live stdout events because there is no visible tool call in the turn UI.
+    SkillDynamicContext,
 }
 
 pub struct ShellRuntime {
@@ -96,7 +101,11 @@ impl ShellRuntime {
         Self { backend }
     }
 
-    fn stdout_stream(ctx: &ToolCtx) -> Option<crate::exec::StdoutStream> {
+    fn stdout_stream(&self, ctx: &ToolCtx) -> Option<crate::exec::StdoutStream> {
+        if self.backend == ShellRuntimeBackend::SkillDynamicContext {
+            return None;
+        }
+
         Some(crate::exec::StdoutStream {
             sub_id: ctx.turn.sub_id.clone(),
             call_id: ctx.call_id.clone(),
@@ -275,7 +284,7 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
         let env = attempt
             .env_for(command, options, managed_network)
             .map_err(|err| ToolError::Codex(err.into()))?;
-        let out = execute_env(env, Self::stdout_stream(ctx))
+        let out = execute_env(env, self.stdout_stream(ctx))
             .await
             .map_err(ToolError::Codex)?;
         Ok(out)

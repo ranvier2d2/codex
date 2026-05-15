@@ -623,6 +623,40 @@ dynamic_context:
     );
 }
 
+#[test]
+fn dynamic_context_metadata_for_duplicate_paths_prefers_first() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let skill_path = root.path().join("dupe").join(SKILLS_FILENAME).abs();
+    let mut outcome = SkillLoadOutcome::default();
+    let first_context = SkillDynamicContext {
+        inline_command_placeholders: true,
+        allowed_commands: vec!["first".to_string()],
+        timeout_seconds: Some(1),
+        max_output_chars: None,
+        max_total_output_chars: None,
+        max_placeholders: None,
+    };
+
+    insert_dynamic_context_for_skill_path(&mut outcome, skill_path.clone(), first_context.clone());
+    insert_dynamic_context_for_skill_path(
+        &mut outcome,
+        skill_path.clone(),
+        SkillDynamicContext {
+            inline_command_placeholders: false,
+            allowed_commands: vec!["second".to_string()],
+            timeout_seconds: Some(2),
+            max_output_chars: Some(20),
+            max_total_output_chars: Some(30),
+            max_placeholders: Some(4),
+        },
+    );
+
+    assert_eq!(
+        outcome.dynamic_contexts_by_skill_path.get(&skill_path),
+        Some(&first_context)
+    );
+}
+
 #[tokio::test]
 async fn empty_skill_policy_defaults_to_allow_implicit_invocation() {
     let codex_home = tempfile::tempdir().expect("tempdir");

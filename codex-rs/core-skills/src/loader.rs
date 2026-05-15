@@ -606,8 +606,11 @@ async fn discover_skills_under_root(
                 match parse_skill_file(fs, &path, scope, plugin_id).await {
                     Ok((skill, dynamic_context)) => {
                         if let Some(dynamic_context) = dynamic_context {
-                            Arc::make_mut(&mut outcome.dynamic_contexts_by_skill_path)
-                                .insert(skill.path_to_skills_md.clone(), dynamic_context);
+                            insert_dynamic_context_for_skill_path(
+                                outcome,
+                                skill.path_to_skills_md.clone(),
+                                dynamic_context,
+                            );
                         }
                         outcome.skills.push(skill);
                     }
@@ -631,6 +634,16 @@ async fn discover_skills_under_root(
             root.display()
         );
     }
+}
+
+fn insert_dynamic_context_for_skill_path(
+    outcome: &mut SkillLoadOutcome,
+    skill_path: AbsolutePathBuf,
+    dynamic_context: SkillDynamicContext,
+) {
+    Arc::make_mut(&mut outcome.dynamic_contexts_by_skill_path)
+        .entry(skill_path)
+        .or_insert(dynamic_context);
 }
 
 async fn parse_skill_file(

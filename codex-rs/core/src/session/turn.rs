@@ -43,6 +43,7 @@ use crate::resolve_skill_dependencies_for_turn;
 use crate::session::PreviousTurnSettings;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
+use crate::skill_dynamic_context::expand_skill_dynamic_contexts;
 use crate::stream_events_utils::HandleOutputCtx;
 use crate::stream_events_utils::TurnItemContributorPolicy;
 use crate::stream_events_utils::finalize_non_tool_response_item;
@@ -272,7 +273,7 @@ pub(crate) async fn run_turn(
             .await;
     }
 
-    let skill_items: Vec<ResponseItem> = skill_injections
+    let static_skill_items: Vec<ResponseItem> = skill_injections
         .iter()
         .map(|skill| ContextualUserFragment::into(crate::context::SkillInstructions::from(skill)))
         .collect();
@@ -286,7 +287,7 @@ pub(crate) async fn run_turn(
 
     let mut explicitly_enabled_connectors = collect_explicit_app_ids(&input);
     explicitly_enabled_connectors.extend(collect_explicit_app_ids_from_skill_items(
-        &skill_items,
+        &static_skill_items,
         &available_connectors,
         &skill_name_counts_lower,
     ));
@@ -343,6 +344,30 @@ pub(crate) async fn run_turn(
     sess.merge_connector_selection(explicitly_enabled_connectors.clone())
         .await;
     record_additional_contexts(&sess, &turn_context, additional_contexts).await;
+    let dynamic_context_expansion = if let Some(skills_outcome) = skills_outcome {
+        expand_skill_dynamic_contexts(
+            skill_injections,
+            &mentioned_skills,
+            skills_outcome,
+            &sess,
+            &turn_context,
+        )
+        .await
+    } else {
+        crate::skill_dynamic_context::SkillDynamicContextExpansion {
+            items: skill_injections,
+            warnings: Vec::new(),
+        }
+    };
+    for message in dynamic_context_expansion.warnings {
+        sess.send_event(&turn_context, EventMsg::Warning(WarningEvent { message }))
+            .await;
+    }
+    let skill_items: Vec<ResponseItem> = dynamic_context_expansion
+        .items
+        .iter()
+        .map(|skill| ContextualUserFragment::into(crate::context::SkillInstructions::from(skill)))
+        .collect();
     if !input.is_empty() {
         // Track the previous-turn baseline from the regular user-turn path only so
         // standalone tasks (compact/shell/review) cannot suppress future

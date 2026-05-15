@@ -106,6 +106,7 @@ tokio = { workspace = true, features = [
     "process",
     "rt-multi-thread",
     "signal",
+    "time",
 ] }
 tokio-util = { workspace = true, features = ["rt"] }
 tokio-tungstenite = { workspace = true }

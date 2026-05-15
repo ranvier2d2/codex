@@ -578,6 +578,86 @@ policy:
 }
 
 #[tokio::test]
+async fn loads_skill_dynamic_context_from_yaml() {
+    let codex_home = tempfile::tempdir().expect("tempdir");
+    let skill_path = write_skill(&codex_home, "demo", "dynamic-skill", "from yaml");
+    let skill_dir = skill_path.parent().expect("skill dir");
+
+    write_skill_metadata_at(
+        skill_dir,
+        r#"
+dynamic_context:
+  inline_command_placeholders: true
+  timeout_seconds: 7
+  max_output_chars: 12000
+  max_total_chars: 24000
+  max_placeholders: 3
+  allowed_commands:
+    - "gh pr diff"
+    - "gh pr view --comments"
+"#,
+    );
+
+    let cfg = make_config(&codex_home).await;
+    let outcome = load_skills_for_test(&cfg).await;
+
+    assert!(
+        outcome.errors.is_empty(),
+        "unexpected errors: {:?}",
+        outcome.errors
+    );
+    assert_eq!(outcome.skills.len(), 1);
+    assert_eq!(
+        outcome.dynamic_context_for_skill(&outcome.skills[0]),
+        Some(&SkillDynamicContext {
+            inline_command_placeholders: true,
+            allowed_commands: vec![
+                "gh pr diff".to_string(),
+                "gh pr view --comments".to_string(),
+            ],
+            timeout_seconds: Some(7),
+            max_output_chars: Some(12000),
+            max_total_output_chars: Some(24000),
+            max_placeholders: Some(3),
+        })
+    );
+}
+
+#[test]
+fn dynamic_context_metadata_for_duplicate_paths_prefers_first() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let skill_path = root.path().join("dupe").join(SKILLS_FILENAME).abs();
+    let mut outcome = SkillLoadOutcome::default();
+    let first_context = SkillDynamicContext {
+        inline_command_placeholders: true,
+        allowed_commands: vec!["first".to_string()],
+        timeout_seconds: Some(1),
+        max_output_chars: None,
+        max_total_output_chars: None,
+        max_placeholders: None,
+    };
+
+    insert_dynamic_context_for_skill_path(&mut outcome, skill_path.clone(), first_context.clone());
+    insert_dynamic_context_for_skill_path(
+        &mut outcome,
+        skill_path.clone(),
+        SkillDynamicContext {
+            inline_command_placeholders: false,
+            allowed_commands: vec!["second".to_string()],
+            timeout_seconds: Some(2),
+            max_output_chars: Some(20),
+            max_total_output_chars: Some(30),
+            max_placeholders: Some(4),
+        },
+    );
+
+    assert_eq!(
+        outcome.dynamic_contexts_by_skill_path.get(&skill_path),
+        Some(&first_context)
+    );
+}
+
+#[tokio::test]
 async fn empty_skill_policy_defaults_to_allow_implicit_invocation() {
     let codex_home = tempfile::tempdir().expect("tempdir");
     let skill_path = write_skill(&codex_home, "demo", "policy-empty", "from json");

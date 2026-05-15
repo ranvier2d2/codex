@@ -23,6 +23,15 @@ dependencies:
 
 policy:
   allow_implicit_invocation: true
+
+dynamic_context:
+  inline_command_placeholders: false
+  allowed_commands:
+    - "gh pr diff"
+  timeout_seconds: 10
+  max_output_chars: 20000
+  max_total_output_chars: 50000
+  max_placeholders: 16
 ```
 
 ## Field descriptions and constraints
@@ -47,3 +56,20 @@ Top-level constraints:
 - `policy.allow_implicit_invocation`: When false, the skill is not injected into
   the model context by default, but can still be invoked explicitly via `$skill`.
   Defaults to true.
+- `dynamic_context.inline_command_placeholders`: When true, Codex replaces
+  `` !`command` `` placeholders in `SKILL.md` with command output before sending the
+  skill instructions to the model. Defaults to false.
+- `dynamic_context.allowed_commands`: Exact command strings that may run for
+  `` !`command` `` placeholders. Keep this list narrow and deterministic; commands
+  not listed here remain unexpanded.
+- `dynamic_context.timeout_seconds`: Per-command timeout. Codex enforces a
+  hard cap.
+- `dynamic_context.max_output_chars`: Per-command output character budget.
+- `dynamic_context.max_total_output_chars`: Total dynamic context character
+  budget for the skill.
+- `dynamic_context.max_placeholders`: Maximum number of placeholders to expand.
+
+Dynamic context commands are powerful. Use them only when the skill needs live,
+deterministic context that cannot be expressed as static instructions. Prefer
+read-only commands, exact arguments, short outputs, and commands already expected
+by the skill workflow.
